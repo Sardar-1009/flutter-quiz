@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'services/onboarding_service.dart';
 import 'theme/app_theme.dart';
 import 'viewmodels/quiz_viewmodel.dart';
 import 'views/screens/home_screen.dart';
+import 'views/screens/onboarding_screen.dart';
 import 'views/screens/quiz_screen.dart';
 import 'views/screens/result_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(
     ChangeNotifierProvider(
       create: (_) => QuizViewModel(),
@@ -24,8 +27,61 @@ class FlutterQuizApp extends StatelessWidget {
       title: 'Flutter Quiz — Sardar',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
-      home: const _RootNavigator(),
+      home: const _AppBootstrap(),
     );
+  }
+}
+
+/// Checks if onboarding is complete and routes accordingly.
+class _AppBootstrap extends StatefulWidget {
+  const _AppBootstrap();
+
+  @override
+  State<_AppBootstrap> createState() => _AppBootstrapState();
+}
+
+class _AppBootstrapState extends State<_AppBootstrap> {
+  bool _loading = true;
+  bool _onboardingComplete = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkOnboarding();
+  }
+
+  Future<void> _checkOnboarding() async {
+    final service = OnboardingService();
+    final complete = await service.isOnboardingComplete();
+    if (mounted) {
+      setState(() {
+        _onboardingComplete = complete;
+        _loading = false;
+      });
+    }
+  }
+
+  void _onOnboardingDone() {
+    setState(() {
+      _onboardingComplete = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(color: AppTheme.primary),
+        ),
+      );
+    }
+
+    if (!_onboardingComplete) {
+      return OnboardingScreen(onComplete: _onOnboardingDone);
+    }
+
+    return const _RootNavigator();
   }
 }
 
