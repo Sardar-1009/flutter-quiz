@@ -1,18 +1,36 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'firebase_options.dart';
+import 'services/analytics_service.dart';
+import 'services/notification_service.dart';
 import 'services/onboarding_service.dart';
 import 'theme/app_theme.dart';
+import 'viewmodels/auth_viewmodel.dart';
 import 'viewmodels/quiz_viewmodel.dart';
 import 'views/screens/home_screen.dart';
+import 'views/screens/login_screen.dart';
 import 'views/screens/onboarding_screen.dart';
 import 'views/screens/quiz_screen.dart';
+import 'views/screens/register_screen.dart';
 import 'views/screens/result_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  
+  // Инициализация локальных уведомлений
+  final notificationService = NotificationService();
+  await notificationService.init();
+
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => QuizViewModel(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AuthViewModel()),
+        ChangeNotifierProvider(create: (_) => QuizViewModel()),
+      ],
       child: const FlutterQuizApp(),
     ),
   );
@@ -21,67 +39,152 @@ void main() {
 class FlutterQuizApp extends StatelessWidget {
   const FlutterQuizApp({super.key});
 
+  // Single shared AnalyticsService used for the navigator observer.
+  static final _analyticsService = AnalyticsService();
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Flutter Quiz — Sardar',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
+      // Automatically logs screen_view events on every navigation change.
+      navigatorObservers: [_analyticsService.observer],
       home: const _AppBootstrap(),
     );
   }
 }
 
-/// Checks if onboarding is complete and routes accordingly.
-class _AppBootstrap extends StatefulWidget {
+/// Top-level bootstrap: checks auth → onboarding → home.
+class _AppBootstrap extends StatelessWidget {
   const _AppBootstrap();
 
   @override
-  State<_AppBootstrap> createState() => _AppBootstrapState();
+  Widget build(BuildContext context) {
+    return Consumer<AuthViewModel>(
+      builder: (context, auth, _) {
+        // Still initializing
+        if (auth.state == AuthState.idle) {
+          return const _SplashScreen();
+        }
+        // Not authenticated → show auth screens
+        if (auth.state != AuthState.authenticated) {
+          return const _AuthNavigator();
+        }
+        // Authenticated — new user goes to onboarding, returning user to home
+        if (auth.isNewUser) {
+          return _OnboardingGate(
+            onComplete: () => auth.clearNewUserFlag(),
+          );
+        }
+        return const _RootNavigator();
+      },
+    );
+  }
 }
 
-class _AppBootstrapState extends State<_AppBootstrap> {
-  bool _loading = true;
-  bool _onboardingComplete = false;
+/// Splash screen while app initializes.
+class _SplashScreen extends StatelessWidget {
+  const _SplashScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: AppTheme.primary),
+            SizedBox(height: 20),
+            Text(
+              'Загрузка...',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 16),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Switches between login and register screens.
+class _AuthNavigator extends StatefulWidget {
+  const _AuthNavigator();
+
+  @override
+  State<_AuthNavigator> createState() => _AuthNavigatorState();
+}
+
+class _AuthNavigatorState extends State<_AuthNavigator> {
+  bool _showLogin = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 400),
+      transitionBuilder: (child, animation) {
+        return FadeTransition(
+          opacity: animation,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0.05, 0),
+              end: Offset.zero,
+            ).animate(animation),
+            child: child,
+          ),
+        );
+      },
+      child: _showLogin
+          ? LoginScreen(
+              key: const ValueKey('login'),
+              onSwitchToRegister: () => setState(() => _showLogin = false),
+            )
+          : RegisterScreen(
+              key: const ValueKey('register'),
+              onSwitchToLogin: () => setState(() => _showLogin = true),
+            ),
+    );
+  }
+}
+
+/// Shows onboarding for new users, then transitions to home.
+class _OnboardingGate extends StatefulWidget {
+  final VoidCallback onComplete;
+  const _OnboardingGate({required this.onComplete});
+
+  @override
+  State<_OnboardingGate> createState() => _OnboardingGateState();
+}
+
+class _OnboardingGateState extends State<_OnboardingGate> {
+  bool _onboardingDone = false;
 
   @override
   void initState() {
     super.initState();
-    _checkOnboarding();
+    _checkExisting();
   }
 
-  Future<void> _checkOnboarding() async {
+  Future<void> _checkExisting() async {
     final service = OnboardingService();
-    final complete = await service.isOnboardingComplete();
-    if (mounted) {
-      setState(() {
-        _onboardingComplete = complete;
-        _loading = false;
-      });
+    final done = await service.isOnboardingComplete();
+    if (done && mounted) {
+      // Already completed onboarding before — skip
+      widget.onComplete();
     }
-  }
-
-  void _onOnboardingDone() {
-    setState(() {
-      _onboardingComplete = true;
-    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(color: AppTheme.primary),
-        ),
-      );
+    if (_onboardingDone) {
+      return const _RootNavigator();
     }
-
-    if (!_onboardingComplete) {
-      return OnboardingScreen(onComplete: _onOnboardingDone);
-    }
-
-    return const _RootNavigator();
+    return OnboardingScreen(
+      onComplete: () {
+        setState(() => _onboardingDone = true);
+        widget.onComplete();
+      },
+    );
   }
 }
 
@@ -127,7 +230,7 @@ class _RootNavigator extends StatelessWidget {
           key: const ValueKey('error'),
           message: vm.errorMessage,
           onRetry: () => vm.startQuiz(topic: vm.selectedTopic),
-          onHome: vm.resetToHome,
+          onHome: () => vm.resetToHome(), // async — must wrap in lambda
         );
       default:
         return const HomeScreen(key: ValueKey('home'));

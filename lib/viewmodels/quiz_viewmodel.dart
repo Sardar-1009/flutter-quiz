@@ -1,15 +1,18 @@
 import 'package:flutter/foundation.dart';
 import '../models/question_model.dart';
 import '../models/quiz_result_model.dart';
+import '../services/analytics_service.dart';
 import '../services/question_service.dart';
 
 enum QuizState { idle, loading, inProgress, finished, error }
 
 class QuizViewModel extends ChangeNotifier {
   final QuestionService _service;
+  final AnalyticsService _analytics;
 
-  QuizViewModel({QuestionService? service})
-      : _service = service ?? QuestionService();
+  QuizViewModel({QuestionService? service, AnalyticsService? analytics})
+      : _service = service ?? QuestionService(),
+        _analytics = analytics ?? AnalyticsService();
 
   // State
   QuizState _state = QuizState.idle;
@@ -65,6 +68,9 @@ class QuizViewModel extends ChangeNotifier {
 
   // Actions
   Future<void> startQuiz({String topic = 'all'}) async {
+    // ← ANALYTICS: topic selection (before quiz starts)
+    await _analytics.logTopicSelected(topic: topic);
+
     _state = QuizState.loading;
     _selectedTopic = topic;
     _currentIndex = 0;
@@ -81,12 +87,15 @@ class QuizViewModel extends ChangeNotifier {
       if (_questions.isEmpty) {
         _errorMessage = 'Вопросы не найдены';
         _state = QuizState.error;
+        await _analytics.logQuizLoadError(topic: topic); // ← ANALYTICS
       } else {
         _state = QuizState.inProgress;
+        await _analytics.logQuizStart(topic: topic); // ← ANALYTICS
       }
     } catch (e) {
       _errorMessage = e.toString();
       _state = QuizState.error;
+      await _analytics.logQuizLoadError(topic: topic); // ← ANALYTICS
     }
 
     notifyListeners();
@@ -110,6 +119,12 @@ class QuizViewModel extends ChangeNotifier {
 
     if (isLastQuestion) {
       _state = QuizState.finished;
+      // ← ANALYTICS: quiz completed
+      _analytics.logQuizComplete(
+        topic: _selectedTopic,
+        score: _correctAnswersCount,
+        totalQuestions: _questions.length,
+      );
     } else {
       _currentIndex++;
       _selectedOptionIndex = null;
@@ -118,7 +133,20 @@ class QuizViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  void resetToHome() {
+  /// Called when user leaves quiz mid-way (presses back / resets to home).
+  /// Logs abandon only if a quiz was actually in progress.
+  Future<void> _logAbandonIfNeeded() async {
+    if (_state == QuizState.inProgress && _questions.isNotEmpty) {
+      await _analytics.logQuizAbandoned(
+        topic: _selectedTopic,
+        questionsAnswered: _userAnswers.length,
+        totalQuestions: _questions.length,
+      );
+    }
+  }
+
+  Future<void> resetToHome() async {
+    await _logAbandonIfNeeded(); // ← ANALYTICS
     _state = QuizState.idle;
     _questions = [];
     _currentIndex = 0;
